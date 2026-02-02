@@ -1,0 +1,93 @@
+version: "3.9"
+
+services:
+
+  db:
+    image: postgres:16-alpine
+    container_name: datavisyn_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s               
+    networks:
+      - app-network
+
+  localstack:
+    image: localstack/localstack:3.8      
+    container_name: datavisyn_localstack
+    restart: unless-stopped
+    ports:
+      - "5555:4566"
+      - "4510-4559:4510-4559"          
+    environment:
+      - SERVICES=s3
+      - DEBUG=1
+      - DEFAULT_REGION=us-east-1
+      - DATA_DIR=/var/lib/localstack
+      - GATEWAY_LISTEN=0.0.0.0:4566
+    volumes:
+      - localstack_data:/var/lib/localstack
+    networks:
+      - app-network
+
+
+  fastapi:
+    container_name: datavisyn_fastapi
+    build:
+      context: .
+      dockerfile: Dockerfile               
+    restart: unless-stopped
+    depends_on:
+    -  db
+    - localstack
+        
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL_ASYNC: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+
+      # LocalStack (S3)
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_S3_ENDPOINT_URL: ${AWS_S3_ENDPOINT_URL}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+      AWS_S3_ADDRESSING_STYLE: path 
+      
+      PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: debug
+    volumes:
+      - .:/datavisyn_project/app                            
+      - ./uploads:/app/uploads             
+    networks:
+      - app-network
+  
+  test:
+    container_name: datavisyn_tests
+    build: .
+    command:  pytest datavisyn_project/tests/ -v  
+    depends_on:
+      - fastapi
+      - db
+
+
+networks:
+  app-network:
+    name: datavisyn_network
+    driver: bridge
+
+volumes:
+  postgres_data:
+  localstack_data:
